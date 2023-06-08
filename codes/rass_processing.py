@@ -91,7 +91,7 @@ def mask_catl_sources_worker(imgpath,infiledirec,outfiledirec, sources, apsize):
 ####################################################
 ####################################################
 ####################################################
-def scale_subtract_images(imagefiledir, outfiledir, czfiledict, crop=False, imwidth=300, res=45, H0=70., czmin=2530, czmax=7470, progressConf=False):
+def scale_crop_images(imagefiledir, outfiledir, rafiledict, defiledict, czfiledict, crop=False, imwidth=300, res=45, H0=70., use_mp=0, progressConf=False):
     """
     Scale images to a common redshift. Images must be square.
     
@@ -103,6 +103,12 @@ def scale_subtract_images(imagefiledir, outfiledir, czfiledict, crop=False, imwi
         with the rest of this program (e.g. RASS-Int_Broad_grp13_ECO03822.fits).
     outfiledir : str
         Path where scaled images should be written.
+    rafiledict : dict
+        Dictionary mapping filenames (index) to group RAs (values).
+    defiledict : dict
+        Dictionary mapping filenames (index) to group DECs (values).
+    czfiledict : dict
+        Dictionary mapping filenames (index) to group redshifts (values).
     crop : bool, default False
         If True, all images are cropped to size of the smallest scaled images.
         This may preferable if the zero-padding on image borders will produce
@@ -115,8 +121,9 @@ def scale_subtract_images(imagefiledir, outfiledir, czfiledict, crop=False, imwi
         Pixel resolution in arcseconds, default 45.
     H0 : float
         Hubble constant in km/s/(Mpc), default 70.
-    czmin, czmax : float
-        Min and max cz values for all groups, km/s.
+    use_mp = 0
+        Number of cores for parallel processing, must be <=os.cpu_count().
+        If 0 (default), multiprocessing is not used. 
     progressConf : bool, default False
         If True, the loop prints out a progress statement when each image is finished.
 
@@ -125,27 +132,45 @@ def scale_subtract_images(imagefiledir, outfiledir, czfiledict, crop=False, imwi
     Scaled/subtracted images are written to the specified path.
     """
     imagenames = np.array(os.listdir(imagefiledir))
-    imageIDs = np.array([float(imgnm.split('_')[2][3:-5]) for imgnm in imagenames])
+    #imageIDs = np.array([float(imgnm.split('_')[2][3:-5]) for imgnm in imagenames])
+    czvals = np.array(list(czfiledict.values()))
+    czmin=np.min(czvals)
+    czmax=np.max(czvals)
     if crop: # work out what area to retain
         D1 = (imwidth*res/206265)*(czmin/H0)
         Npx = int((D1*H0)/czmax * (206265/res))
         Nbound = (imwidth-Npx)//2 # number of pixels spanning border region
-    for k in range(0,len(imagenames)):
-        hdulist = fits.open(imagefiledir+imagenames[k], memap=False)
+    loop_worker = lambda ii: _scaler_worker_func(ii,Nbound,czmax,imagenames,imagefiledir,outfiledir,rafiledict,defiledict,czfiledict,crop,imwidth,res,H0,progressConf)
+    if use_mp==0:
+        for kk in range(0,len(imagenames)):
+            loop_worker(kk)
+    else:
+        assert use_mp<=os.cpu_count(),'Requesting more cores than available on machine.'
+        pool = ProcessingPool(use_mp)
+        pool.map(loop_worker, [kk for kk in range(0,len(imagenames))])
+        
+
+def _scaler_worker_func(index_,Nbound,czmax,imagenames,imagefiledir,outfiledir,rafiledict,defiledict,czfiledict,crop,imwidth,res,H0,progressConf):
+        hdulist = fits.open(imagefiledir+imagenames[index_], memap=False)
         img = hdulist[0].data
-        czsf = self.grpcz[self.grpid==imageIDs[k]]/czmax
-        if len(czsf)==0:
-            continue
+        #czsf = self.grpcz[self.grpid==imageIDs[k]]/czmax
+        czsf = czfiledict[imagenames[index_]]/czmax
+        #if len(czsf)==0:
+        #    continue
         img = ndimage.geometric_transform(img, scale_image, cval=0, extra_keywords={'scale':czsf, 'imwidth':imwidth})
         if crop: # work out which pixels to retain
             hdulist[0].data = img
             wcs = WCS(hdulist[0].header)
-            sel=(self.grpid==imageIDs[k])
-                croppedim = Cutout2D(img, SkyCoord(self.grpra[sel]*uu.degree,self.grpdec[sel]*uu.degree,frame='fk5'), int(imwidth-2*Nbound), wcs)
-                hdu = fits.PrimaryHDU(croppedim.data, header=croppedim.wcs.to_header())
-                hdulist=fits.HDUList([hdu])
-            else:
-                hdulist[0].data = img
-            hdulist.writeto(outfiledir+imagenames[k], overwrite=True)
-            hdulist.close()
-            if progressConf: print("Image {} complete.".format(k))
+            #sel=(self.grpid==imageIDs[k])
+            croppedim = Cutout2D(img, SkyCoord(rafiledict[imagenames[index_]]*uu.degree,defiledict[imagenames[index_]]*uu.degree,frame='fk5'), int(imwidth-2*Nbound), wcs)
+            hdu = fits.PrimaryHDU(croppedim.data, header=croppedim.wcs.to_header())
+            hdulist=fits.HDUList([hdu])
+        else:
+            hdulist[0].data = img
+        hdulist.writeto(outfiledir+imagenames[index_], overwrite=True)
+        hdulist.close()
+        if progressConf: print("Finished scaling {}.".format(imagenames[index_]))
+
+def scale_image(output_coords,scale,imwidth):
+    mid = imwidth//2
+    return (output_coords[0]/scale+mid-mid/scale, output_coords[1]/scale+mid-mid/scale)
