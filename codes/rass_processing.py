@@ -23,6 +23,7 @@ from matplotlib.colors import LogNorm
 import matplotlib.pyplot as plt
 #import multiprocessing 
 from pathos.multiprocessing import ProcessingPool 
+from numba import jit
 
 def mask_catl_sources(infiledirec, outfiledirec, source_ra, source_dec, apsize, use_mp=0):
     """
@@ -91,7 +92,7 @@ def mask_catl_sources_worker(imgpath,infiledirec,outfiledirec, sources, apsize):
 ####################################################
 ####################################################
 ####################################################
-def scale_crop_images(imagefiledir, outfiledir, rafiledict, defiledict, czfiledict, crop=False, imwidth=300, res=45, H0=70., use_mp=0, progressConf=False):
+def scale_crop_images(imagefiledir, outfiledir, rafiledict, defiledict, czfiledict, crop=False, crop_window_size=None, imwidth=300, res=45, H0=70., use_mp=0, progressConf=False):
     """
     Scale images to a common redshift. Images must be square.
     
@@ -115,6 +116,10 @@ def scale_crop_images(imagefiledir, outfiledir, rafiledict, defiledict, czfiledi
         artefacts in other analysis --- cropping maintains uniform noise
         between each output image, but all images are resized according to the
         largest and smallest cz values.
+    crop_window_size : int
+        Size of cropping window. If None (default) and crop is True, then the size
+        will be determined using the image image width, resolution, and max cz value.
+        If passed as float, value will be casted as int.
     imwidth : int
         Width of image, assumed to be square, in pixels; default 300.
     res : float
@@ -136,11 +141,14 @@ def scale_crop_images(imagefiledir, outfiledir, rafiledict, defiledict, czfiledi
     czvals = np.array(list(czfiledict.values()))
     czmin=np.min(czvals)
     czmax=np.max(czvals)
-    if crop: # work out what area to retain
+    if crop and (crop_window_size is None): # work out what area to retain
         D1 = (imwidth*res/206265)*(czmin/H0)
         Npx = int((D1*H0)/czmax * (206265/res))
         Nbound = (imwidth-Npx)//2 # number of pixels spanning border region
-    loop_worker = lambda ii: _scaler_worker_func(ii,Nbound,czmax,imagenames,imagefiledir,outfiledir,rafiledict,defiledict,czfiledict,crop,imwidth,res,H0,progressConf)
+        crop_window_size = int(imwidth - 2*Nbound)
+    else:
+        crop_window_size = int(crop_window_size)
+    loop_worker = lambda ii: _scaler_worker_func(ii,crop_window_size,czmax,imagenames,imagefiledir,outfiledir,rafiledict,defiledict,czfiledict,crop,imwidth,res,H0,progressConf)
     if use_mp==0:
         for kk in range(0,len(imagenames)):
             loop_worker(kk)
@@ -150,7 +158,7 @@ def scale_crop_images(imagefiledir, outfiledir, rafiledict, defiledict, czfiledi
         pool.map(loop_worker, [kk for kk in range(0,len(imagenames))])
         
 
-def _scaler_worker_func(index_,Nbound,czmax,imagenames,imagefiledir,outfiledir,rafiledict,defiledict,czfiledict,crop,imwidth,res,H0,progressConf):
+def _scaler_worker_func(index_,crop_window_size,czmax,imagenames,imagefiledir,outfiledir,rafiledict,defiledict,czfiledict,crop,imwidth,res,H0,progressConf):
         hdulist = fits.open(imagefiledir+imagenames[index_], memap=False)
         img = hdulist[0].data
         #czsf = self.grpcz[self.grpid==imageIDs[k]]/czmax
@@ -162,7 +170,7 @@ def _scaler_worker_func(index_,Nbound,czmax,imagenames,imagefiledir,outfiledir,r
             hdulist[0].data = img
             wcs = WCS(hdulist[0].header)
             #sel=(self.grpid==imageIDs[k])
-            croppedim = Cutout2D(img, SkyCoord(rafiledict[imagenames[index_]]*uu.degree,defiledict[imagenames[index_]]*uu.degree,frame='fk5'), int(imwidth-2*Nbound), wcs)
+            croppedim = Cutout2D(img, SkyCoord(rafiledict[imagenames[index_]]*uu.degree,defiledict[imagenames[index_]]*uu.degree,frame='fk5'), crop_window_size, wcs)
             hdu = fits.PrimaryHDU(croppedim.data, header=croppedim.wcs.to_header())
             hdulist=fits.HDUList([hdu])
         else:
@@ -174,3 +182,85 @@ def _scaler_worker_func(index_,Nbound,czmax,imagenames,imagefiledir,outfiledir,r
 def scale_image(output_coords,scale,imwidth):
     mid = imwidth//2
     return (output_coords[0]/scale+mid-mid/scale, output_coords[1]/scale+mid-mid/scale)
+
+
+####################################################
+####################################################
+####################################################
+# Image stacking
+####################################################
+####################################################
+####################################################
+
+def stack_images(grpid, grpcz, imagefiledir, stackproperty, binedges):
+        """
+        Stack X-ray images of galaxy groups in bins of group properties
+        (e.g. richness or halo mass).
+
+        Parameters
+        --------------------
+        imgfiledir : str
+            Path to directory containing input images for stacking.
+            Each FITS file in this directory must be named consistently
+            with the rest of this program (e.g. RASS-Int_Broad_grp13_ECO03822.fits).
+        stackproperty : iterable
+            Group property to be used for binning (e.g. halo mass). This
+            list should include an entry for *every* group, as to match
+            the length of self.grpid.
+        bins : iterable
+            Array of bins for stacking. It should represent the bin *edges*. 
+            Example: if bins=[11,12,13,14,15,16], then the resulting bins
+            are [11,12], [12,13], [13,14], [14,15], [15,16].
+        
+        Returns
+        --------------------
+        groupstackID : np.array
+            The ID of stack to which each galaxy group in self.grpid belongs.
+        n_in_bin : list
+            Number of images contributing to each stack.
+        bincenters : np.array
+            Center of each bin used in stacking.
+        finalimagelist : list
+            List of final stacked images, i.e. finalimagelist[i] is a sigma-clipped
+            average of all images whose groups satisifed the boudnary conditions of
+            bin[i]. Each image is a 2D numpy array.
+        """
+        imagenames = np.array(os.listdir(imagefiledir))
+        assert len(grpid)==len(imagenames), "Number of files in directory must match number of groups."
+        print(imagenames[0].split('_'))
+        imageIDs = np.array([float(imgnm.split('_')[2][3:-5]) for imgnm in imagenames])
+        _, order = np.where(grpid[:,None]==imageIDs)
+        imageIDs = imageIDs[order]
+        imagenames = imagenames[order]
+        assert (imageIDs==grpid).all(), "ID numbers are not sorted properly."
+
+        stackproperty = np.asarray(stackproperty)
+        groupstackID = np.zeros_like(stackproperty)        
+        binedges = np.array(binedges)
+        leftedges = binedges[:-1]
+        rightedges = binedges[1:]
+        bincenters = (leftedges+rightedges)/2.
+        finalimagelist = []
+        n_in_bin=[]
+        for i in range(0,len(bincenters)):
+            stacksel = np.where(np.logical_and(stackproperty>=leftedges[i], stackproperty<rightedges[i]))
+            imagenamesneeded = imagenames[stacksel]
+            imageIDsneeded = imageIDs[stacksel]
+            groupstackID[stacksel]=i+1
+            images_to_stack = [0]*len(imagenamesneeded)
+            for j in range(0,len(imagenamesneeded)):
+                img = imagenamesneeded[j]
+                hdulist = fits.open(imagefiledir+img, memmap=False)
+                img = hdulist[0].data
+                if np.isnan(img).all(): print('all NANs: ', imagenamesneeded[j])
+                hdulist.close()
+                images_to_stack[j]=np.array(img)#.append(img)
+            avg = _combine_images_worker(np.array(images_to_stack))#np.sum(images_to_stack,axis=0)#/len(images_to_stack)
+            n_in_bin.append(len(images_to_stack))
+            finalimagelist.append(avg)
+            print("Bin {} done.".format(i))
+        return groupstackID, n_in_bin, bincenters, finalimagelist
+
+@jit(nopython=True)
+def _combine_images_worker(image_arr):
+    return np.sum(image_arr,axis=0)

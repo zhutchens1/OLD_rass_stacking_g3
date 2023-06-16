@@ -60,7 +60,7 @@ elif center_defn=='BCG':
     grpdec = ecowb.dedeg.to_numpy()
 
 rasstable = pd.read_csv("/srv/one/zhutchen/rass_stacking_g3/codes/RASS_public_contents_lookup.csv")
-names = get_neighbor_images(grpra,grpdec,rasstable.ra,rasstable.dec,rasstable.image,5)
+names = get_neighbor_images(grpra,grpdec,rasstable.ra,rasstable.dec,rasstable.image,9)
 
 expmaps=np.zeros_like(names,dtype='object')
 cntmaps_broad=np.zeros_like(names,dtype='object')
@@ -97,4 +97,4 @@ if generate_soft:
     pool.starmap(mosaicfunc_soft,args)
     pool.close()
 
-
+print("Don't forget! You may need to mv the outputs around in the file system so that exposure maps are in their own directory.")
