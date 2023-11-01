@@ -10,13 +10,13 @@ n_cores = 35
 generate_broad = True
 generate_hard = False
 generate_soft = False
-center_defn = 'BCG'
-assert center_defn=='average' or center_defn=='BCG', "Center defintion must be `average` or `BCG`."
+center_defn = 'average'
+assert center_defn=='average' or center_defn=='BCG' or center_defn=='random', "Center defintion must be `average` or `BCG` or `random`."
 
 ecofile='/srv/one/zhutchen/g3groupfinder/resolve_and_eco/ECOdata_G3catalog_luminosity.csv'
 resfile='/srv/one/zhutchen/g3groupfinder/resolve_and_eco/RESOLVEdata_G3catalog_luminosity.csv'
 rassinputdirec='/srv/two/zhutchen/rass/'
-rassoutputdirec_broad='/srv/two/zhutchen/g3rassimages_mosaics_broad_bcg/'
+rassoutputdirec_broad='/srv/two/zhutchen/g3rassimages_mosaics_broad_random/'
 rassoutputdirec_hard='/srv/two/zhutchen/g3rassimages_mosaics_hard/'
 rassoutputdirec_soft='/srv/two/zhutchen/g3rassimages_mosaics_soft/'
 ##########################################################################################
@@ -42,7 +42,9 @@ eco = pd.read_csv(ecofile)
 eco = eco[(eco.absrmag<=-17.33)&(eco.g3grpcz_l>3000)&(eco.g3grpcz_l<7000)&(eco.g3fc_l>0)]
 res = pd.read_csv(resfile)
 res = res[(res.f_b==1)&(res.absrmag<=-17.0)&(res.g3grpcz_l>4500)&(res.g3grpcz_l<7000)&(res.g3fc_l>0)]
-assert min(res.g3grp_l)>max(eco.g3grp_l)
+print(eco)
+print(res)
+
 
 eco = eco[['name','g3grp_l','g3grpradeg_l','g3grpdedeg_l','radeg','dedeg']]
 res = res[['name','g3grp_l','g3grpradeg_l','g3grpdedeg_l','radeg','dedeg']]
@@ -58,6 +60,9 @@ if center_defn=='average':
 elif center_defn=='BCG':
     grpra = ecowb.radeg.to_numpy()
     grpdec = ecowb.dedeg.to_numpy()
+elif center_defn=='random':
+    grpra = np.random.uniform(ecowb.radeg.to_numpy().min(), ecowb.radeg.to_numpy().max(), len(ecowb))
+    grpdec = np.random.uniform(ecowb.dedeg.to_numpy().min(), ecowb.dedeg.to_numpy().max(), len(ecowb))
 
 rasstable = pd.read_csv("/srv/one/zhutchen/rass_stacking_g3/codes/RASS_public_contents_lookup.csv")
 names = get_neighbor_images(grpra,grpdec,rasstable.ra,rasstable.dec,rasstable.image,9)
@@ -70,8 +75,8 @@ for ii,subarr in enumerate(names):
     for jj,nm in enumerate(subarr):
         obs=nm.split('.')[0]
         cntmaps_broad[ii][jj]=rassinputdirec+obs+'/'+obs+'_im1.fits'
-        cntmaps_hard[ii][jj]=rassinputdirec+obs+'/'+obs+'_im1.fits'
-        cntmaps_soft[ii][jj]=rassinputdirec+obs+'/'+obs+'_im1.fits'
+        cntmaps_hard[ii][jj]=rassinputdirec+obs+'/'+obs+'_im2.fits'
+        cntmaps_soft[ii][jj]=rassinputdirec+obs+'/'+obs+'_im3.fits'
         expmaps[ii][jj]=rassinputdirec+obs+'/'+obs+'_mex.fits'
 
 

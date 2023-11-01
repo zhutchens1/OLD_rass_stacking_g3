@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 import sys
 sys.path.insert(0,'../codes/')
-from rass_processing import mask_catl_sources, scale_crop_images, stack_images
+from rass_processing import mask_catl_sources, scale_crop_images, stack_images, mask_starfinder_sources, mask_no_sources, average_count_rate_maps
 from datetime import datetime
 import pickle
 
@@ -17,9 +17,9 @@ file_arch_scaled = '/srv/two/zhutchen/g3rassimages_scaled'
 expmap_direc = '/srv/two/zhutchen/g3rassimages_exposuremaps/'
 expmap_scaled_direc = '/srv/two/zhutchen/g3rassimages_exposuremaps_scaled/'
 stackingoutput=['/srv/one/zhutchen/rass_stacking_g3/stackedimages/stackingresult'+flt[:-1]+'_'+today+'.pkl' for flt in filters]
-do_masking = False 
-do_scaling = False
-do_stacking = True
+do_masking = True 
+do_scaling = True
+do_stacking = True 
 #####################################
 ecofile='/srv/one/zhutchen/g3groupfinder/resolve_and_eco/ECOdata_G3catalog_luminosity.csv'
 resfile='/srv/one/zhutchen/g3groupfinder/resolve_and_eco/RESOLVEdata_G3catalog_luminosity.csv'
@@ -34,6 +34,8 @@ res = res[['name','g3grp_l','g3grpradeg_l','g3grpdedeg_l','radeg','dedeg','g3grp
 ecowb = pd.concat([eco,res])
 del eco
 del res
+
+print("WARNING: This code not functioning correctly")
 if filters[0].endswith('bcg/'):
     ecowb.loc[:,'grpra_for_stacking'] = ecowb.radeg
     ecowb.loc[:,'grpde_for_stacking'] = ecowb.dedeg
@@ -48,48 +50,45 @@ else:
 # Mask point sources
 if do_masking:
     cat2rxs = pd.read_csv("cat2rxs.csv")
+    cat2rxs = cat2rxs[cat2rxs.EXI_ML>9]
     for filt in filters:
-        mask_catl_sources(file_arch_mosaic+filt, file_arch_masked+filt,cat2rxs.RA_DEG,cat2rxs.DEC_DEG,5,use_mp=number_of_cores)
-#mask_catl_sources('/srv/two/zhutchen/g3rassimages_mosaics_broad/','/srv/two/zhutchen/g3rassimages_masked_broad/',cat2rxs.RA_DEG,cat2rxs.DEC_DEG,5,use_mp=30)
-#mask_catl_sources('/srv/two/zhutchen/g3rassimages_mosaics_hard/','/srv/two/zhutchen/g3rassimages_masked_hard/',cat2rxs.RA_DEG,cat2rxs.DEC_DEG,5,use_mp=30)
-#mask_catl_sources('/srv/two/zhutchen/g3rassimages_mosaics_soft/','/srv/two/zhutchen/g3rassimages_masked_soft/',cat2rxs.RA_DEG,cat2rxs.DEC_DEG,5,use_mp=30)
-#mask_catl_sources('/srv/two/zhutchen/g3rassimages_mosaics_broad_bcg/','/srv/two/zhutchen/g3rassimages_masked_broad_bcg/',cat2rxs.RA_DEG,cat2rxs.DEC_DEG,5,use_mp=30)
-
+        #mask_catl_sources(file_arch_mosaic+filt, file_arch_masked+filt,cat2rxs.RA_DEG,cat2rxs.DEC_DEG,6,use_mp=number_of_cores)
+        mask_starfinder_sources(file_arch_mosaic+filt, file_arch_masked+filt, 6, use_mp=number_of_cores)
+        #mask_no_sources(file_arch_mosaic+filt, file_arch_masked+filt, use_mp=number_of_cores)
 
 ####################################
 ####################################
 ####################################
 # image rescaling
-crsize=100 # cropping size
+crsize=256 # cropping size
 if do_scaling:
     files = os.listdir("/srv/two/zhutchen/g3rassimages_mosaics_broad/")
     czdict = {ff : float(ecowb['grpcz_for_stacking'][(ecowb.g3grp_l==float(ff.split('_')[2][3:-5]))].values) for ff in files}
     radict = {ff : float(ecowb['grpra_for_stacking'][(ecowb.g3grp_l==float(ff.split('_')[2][3:-5]))].values) for ff in files}
     dedict = {ff : float(ecowb['grpde_for_stacking'][(ecowb.g3grp_l==float(ff.split('_')[2][3:-5]))].values) for ff in files}
     for filt in filters:
-        scale_crop_images(file_arch_masked+filt,file_arch_scaled+filt,radict,dedict,czdict,crop=True,crop_window_size=100,imwidth=512,progressConf=True,use_mp=30)
+        scale_crop_images(file_arch_masked+filt,file_arch_scaled+filt,radict,dedict,czdict,crop=True,crop_window_size=crsize,imwidth=512,progressConf=True,use_mp=30)
 
 
 files = os.listdir(expmap_direc)
 czdict = {ff : float(ecowb['grpcz_for_stacking'][(ecowb.g3grp_l==float(ff.split('_')[2][3:-5]))].values) for ff in files}
 radict = {ff : float(ecowb['grpra_for_stacking'][(ecowb.g3grp_l==float(ff.split('_')[2][3:-5]))].values) for ff in files}
 dedict = {ff : float(ecowb['grpde_for_stacking'][(ecowb.g3grp_l==float(ff.split('_')[2][3:-5]))].values) for ff in files}
-scale_crop_images(expmap_direc,expmap_scaled_direc,radict,dedict,czdict,crop=True,crop_window_size=100,imwidth=512,progressConf=False,use_mp=30)
+scale_crop_images(expmap_direc,expmap_scaled_direc,radict,dedict,czdict,crop=True,crop_window_size=crsize,imwidth=512,progressConf=False,use_mp=30)
 
 #####################################
 #####################################
 #####################################
 # Stack images
+
 if do_stacking:
     for ii,filt in enumerate(filters):
-        stID,nb,binc,cmap=stack_images(ecowb.g3grp_l.to_numpy(),ecowb.grpcz_for_stacking.to_numpy(),file_arch_scaled+filt,ecowb.g3logmh_l.to_numpy(),[11.,12.1,13.3,15])
-        _,_,_,emap=stack_images(ecowb.g3grp_l.to_numpy(),ecowb.grpcz_for_stacking.to_numpy(),expmap_scaled_direc,ecowb.g3logmh_l.to_numpy(),[11.,12.1,13.3,15])
-    result = [stID,nb,binc,cmap,emap]
-    pickle.dump(result,open(stackingoutput[ii],'wb')) 
-    #print(cmap)
-    #import matplotlib.pyplot as plt
-    #from matplotlib.colors import LogNorm
-    #fig,axs=plt.subplots(ncols=len(cmap))
-    #for ii in range(0,len(cmap)):
-    #    axs[ii].imshow(cmap[ii]/emap[ii],norm=LogNorm())
-    #plt.show()
+        stID,nb,binc,cmap=stack_images(ecowb.g3grp_l.to_numpy(),ecowb.grpcz_for_stacking.to_numpy(),file_arch_scaled+filt,ecowb.g3logmh_l.to_numpy(),[11.,12.1,13.3,14.3,14.5])
+        _,_,_,emap=stack_images(ecowb.g3grp_l.to_numpy(),ecowb.grpcz_for_stacking.to_numpy(),expmap_scaled_direc,ecowb.g3logmh_l.to_numpy(),[11.,12.1,13.3,14.3,14.5])
+        result = [stID,nb,binc,cmap,emap]
+        pickle.dump(result,open(stackingoutput[ii],'wb')) 
+
+
+        stID,nb,binc,rate_maps=average_count_rate_maps(ecowb.g3grp_l.to_numpy(),ecowb.grpcz_for_stacking.to_numpy(),file_arch_scaled+filt,expmap_scaled_direc,ecowb.g3logmh_l.to_numpy(),[11.,12.1,13.3,14.3,14.5,15])
+        result=[stID,nb,binc,rate_maps]
+        pickle.dump(result,open(stackingoutput[ii][:-4]+'_averagecrmap.pkl','wb'))
